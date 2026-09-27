@@ -1,0 +1,15 @@
+import os,polars as pl, numpy as np, json
+C=pl.col; S=os.environ.get('POKEML_SCRATCH','artifacts/session4r_cache')+'/'; os.makedirs(S,exist_ok=True)
+g=pl.read_parquet(S+'pump_probe2.parquet').filter(C('phase')=='evaluation')
+mem=set(json.load(open('artifacts/candidate_r34/build_manifest.json'))['members']); r41=set(json.load(open('artifacts/candidate_r41/build_manifest.json'))['new_pairs'])
+ep=pl.read_csv('data/evaluation_pairs.csv').select('pair_id','player_1','player_2'); sub=pl.read_csv('artifacts/candidate_r33/submission.csv').select('pair_id','risk_score')
+a=g.select(C('player_id').alias('player_1'),C('q').alias('player_2'),'n_s','n_w','r_s','r_w','z2','lift_adj')
+def valid(pre): return pl.when((C(pre+'n_s')>=8)&(C(pre+'n_w')>=15)).then(C(pre+'z2')).otherwise(0.0)
+j=ep.join(sub,on='pair_id').join(a,on=['player_1','player_2'],how='left').join(a.rename({'player_1':'player_2','player_2':'player_1','n_s':'b_n_s','n_w':'b_n_w','r_s':'b_r_s','r_w':'b_r_w','z2':'b_z2','lift_adj':'b_lift_adj'}),on=['player_1','player_2'],how='left')
+j=j.with_columns(pl.max_horizontal(valid(''),valid('b_')).alias('zz'),C('pair_id').is_in(list(mem)).alias('mem'),C('pair_id').is_in(list(r41)).alias('r41'))
+print('members zz quantiles',np.quantile(j.filter(C('mem'))['zz'].to_numpy(),[0,0.1,0.25,0.5]).round(2),' r41 pairs',np.quantile(j.filter(C('r41'))['zz'].to_numpy(),[0,0.5]).round(2))
+null=j.filter(C('risk_score')<0.001)['zz'].to_numpy(); print('null (risk<0.001) n',len(null),' frac zz>2.5',(null>2.5).mean().round(4),' >3',(null>3).mean().round(4),' >3.5',(null>3.5).mean().round(4),' >4',(null>4).mean().round(4))
+for name,f in [('>=0.9',C('risk_score')>=0.9),('0.5-0.9',(C('risk_score')>=0.5)&(C('risk_score')<0.9)),('0.05-0.5',(C('risk_score')>=0.05)&(C('risk_score')<0.5)),('0.01-0.05',(C('risk_score')>=0.01)&(C('risk_score')<0.05)),('0.001-0.01',(C('risk_score')>=0.001)&(C('risk_score')<0.01))]:
+    x=j.filter(f&~C('mem')&~C('r41')); z=x['zz'].to_numpy()
+    print(f'band {name:10s} n={len(z):6d} zz>2.5 {int((z>2.5).sum()):4d} (null exp {(len(z)*(null>2.5).mean()):.1f})  >3 {int((z>3).sum()):4d} (exp {(len(z)*(null>3).mean()):.1f})  >3.5 {int((z>3.5).sum()):4d} (exp {(len(z)*(null>3.5).mean()):.1f})  >4 {int((z>4).sum()):3d} (exp {(len(z)*(null>4).mean()):.1f})')
+j.write_parquet(S+'pump_probe2_eval.parquet')

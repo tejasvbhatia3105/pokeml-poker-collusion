@@ -1,0 +1,22 @@
+import os,polars as pl, numpy as np
+C=pl.col; S=os.environ.get('POKEML_SCRATCH','artifacts/session4r_cache')+'/'; os.makedirs(S,exist_ok=True)
+z=pl.read_parquet(S+'card_share_z.parquet')
+def pairs(z,phase,pp):
+    a=z.filter(C('phase')==phase).select(C('player_id').alias('player_1'),C('q').alias('player_2'),'n_all','z_all','n_after','z_after','n_before','z_before')
+    j=pp.join(a,on=['player_1','player_2'],how='left').join(a.rename({'player_1':'player_2','player_2':'player_1','z_all':'z_all2','z_after':'z_after2','z_before':'z_before2','n_all':'n_all2','n_after':'n_after2','n_before':'n_before2'}),on=['player_1','player_2'],how='left')
+    return j.with_columns(pl.max_horizontal(C('z_after').abs(),C('z_after2').abs()).alias('za_max'),pl.max_horizontal(C('z_all').abs(),C('z_all2').abs()).alias('zall_max'),pl.max_horizontal(C('z_before').abs(),C('z_before2').abs()).alias('zb_max'))
+lab=pl.read_csv('data/development_labels.csv'); dv=pairs(z,'development',lab.select('pair_id','player_1','player_2','label','behavior_family'))
+def q(x,name): 
+    x=x.drop_nulls(); print(f'{name:34s} n={len(x):6d} |z_after| median {x.median():.2f} q90 {x.quantile(0.9):.2f} q99 {x.quantile(0.99):.2f} frac>3 {(x>3).mean():.3f} frac>4 {(x>4).mean():.3f}')
+q(dv.filter(C('label')==0)['za_max'],'dev confirmed negatives')
+for f in ['directed_transfer','soft_play','coordinated_isolation']: q(dv.filter(C('behavior_family')==f)['za_max'],'dev '+f)
+ep=pl.read_csv('data/evaluation_pairs.csv').select('pair_id','player_1','player_2'); sub=pl.read_csv('artifacts/candidate_r33/submission.csv').select('pair_id','risk_score','predicted_behavior')
+ev=pairs(z,'evaluation',ep.join(sub,on='pair_id'))
+q(ev.filter(C('risk_score')<0.01)['za_max'],'eval risk<0.01')
+q(ev.filter((C('risk_score')>=0.01)&(C('risk_score')<0.5))['za_max'],'eval risk 0.01-0.5')
+q(ev.filter(C('risk_score')>=0.5)['za_max'],'eval risk>=0.5')
+for f in ['directed_transfer','soft_play','coordinated_isolation']: q(ev.filter((C('risk_score')>=0.5)&(C('predicted_behavior')==f))['za_max'],'eval>=0.5 '+f)
+print('--- all-hands statistic (incl. Q acting first)')
+q(dv.filter(C('label')==0)['zall_max'],'dev confirmed negatives'); q(dv.filter(C('label')==1)['zall_max'],'dev positives'); q(ev.filter(C('risk_score')<0.01)['zall_max'],'eval risk<0.01'); q(ev.filter(C('risk_score')>=0.5)['zall_max'],'eval risk>=0.5')
+top=ev.sort('za_max',descending=True).head(15).select('pair_id','risk_score','predicted_behavior','za_max','zall_max','n_after','n_after2'); print(top)
+ev.write_parquet(S+'card_share_eval.parquet'); dv.write_parquet(S+'card_share_dev.parquet')

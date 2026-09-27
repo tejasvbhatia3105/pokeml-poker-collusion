@@ -1,0 +1,15 @@
+import json
+import numpy as np,polars as pl
+from catboost import CatBoostClassifier
+import session81_conditional_secondary as s
+C=pl.col
+def main():
+ full=s.hand_data();d=full.filter(C('behavior_family')=='directed_transfer').drop('row').with_row_index('row');cfg=json.load(open('artifacts/evidence_session6/priority_ordered_columns.json'));hx=d.select(cfg['event']).to_numpy();xt=d.select(cfg['type']).to_numpy();ax=s.actor_features(d);fv=d['fold'].to_numpy();cond=d.select('pair_id','hand_id').join(pl.read_parquet(s.ROOT/'conditional_oof.parquet'),on=['pair_id','hand_id'],validate='1:1',maintain_order='left').select('actor0_conditional','actor1_conditional').to_numpy();err=0
+ for f in range(4):
+  m=CatBoostClassifier();m.load_model(str(s.ROOT/f'secondary_fold{f}.cbm'));va=fv==f
+  for r in [0,1]:p=m.predict_proba(np.column_stack([hx[va],ax[va,r]]),thread_count=2)[:,1];err=max(err,float(abs(p-cond[va,r]).max()))
+  typ=CatBoostClassifier();typ.load_model(f'artifacts/evidence_session6/priority_ordered_type_directed_transfer_fold{f}.cbm');tp=typ.predict_proba(xt,thread_count=2)[:,1];want=s.direct(d,~va,tp);mut=d.with_columns(*[pl.when(C('fold')==f).then(pl.lit(value)).otherwise(C(name)).alias(name) for name,value in [('evidence',0),('evidence_rank',-999),('time',-999),('subtype',0)]]);got=s.direct(mut,~va,tp)
+  for a,b in zip(want[:3],got[:3]):np.testing.assert_array_equal(a,b)
+  y,e,_,_=want;tr=e[:,1]&~y[:,0];assert not (tr&va).any() and y[tr,1].sum()==y[:,1].sum()
+ assert err==0;dw=d.select('pair_id').join(pl.read_parquet('artifacts/evidence_session25_persistent_actor/actor_oof.parquet').select('pair_id','actor0','actor1'),on='pair_id',validate='m:1',maintain_order='left').select('actor0','actor1').to_numpy();primary=s.primary_by_actor(d);score=((1-primary)*cond*dw).sum(1);out=pl.read_parquet(s.ROOT/'event_oof.parquet');saved=d.select('pair_id','hand_id').join(out,on=['pair_id','hand_id'],validate='1:1',maintain_order='left');np.testing.assert_array_equal(score,saved['bg_secondary'].to_numpy());np.testing.assert_array_equal((primary*dw).sum(1),saved['bg_primary'].to_numpy());assert np.max(saved['bg_primary'].to_numpy()+score)<=1+1e-12;z=out.join(pl.read_parquet('artifacts/evidence_session59_pressure_equity/event_oof.parquet'),on=['pair_id','hand_id'],suffix='_base',validate='1:1');np.testing.assert_array_equal(z['bg_primary'].to_numpy(),z['bg_primary_base'].to_numpy());other=z.filter(~C('pair_id').is_in(d['pair_id'].unique().implode()));np.testing.assert_array_equal(other['bg_secondary'].to_numpy(),other['bg_secondary_base'].to_numpy());proof={'new_secondary_models_replayed':4,'original_primary_models_replayed':4,'conditional_probability_error':err,'actor_integrated_chain_rule_exact':True,'target_mutation_checks':4,'all_secondary_positives_retained':True,'other_heads_unchanged':True,'categorical_probability_sum_at_most_one':True};(s.ROOT/'verification.json').write_text(json.dumps(proof,indent=2));print(json.dumps(proof,indent=2))
+if __name__=='__main__':main()
